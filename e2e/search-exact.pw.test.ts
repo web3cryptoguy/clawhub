@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test'
+import { expectNoRuntimeErrors, trackRuntimeErrors } from './helpers/runtimeErrors'
 
 test('skills search paginates exact results', async ({ page }) => {
+  const errors = trackRuntimeErrors(page)
   await page.addInitScript(() => {
     const makeSearchResults = (count: number) =>
       Array.from({ length: count }, (_, index) => ({
@@ -108,4 +110,5 @@ test('skills search paginates exact results', async ({ page }) => {
     () => (window as typeof window & { __searchLimits: number[] }).__searchLimits,
   )
   expect(Math.max(...limits)).toBeGreaterThan(initialLimit)
+  await expectNoRuntimeErrors(page, errors)
 })

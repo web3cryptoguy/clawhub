@@ -116,6 +116,9 @@ bun run verify:convex-contract -- --prod
 PLAYWRIGHT_BASE_URL=https://clawhub.ai bunx playwright test e2e/menu-smoke.pw.test.ts e2e/upload-auth-smoke.pw.test.ts
 ```
 
+The Playwright smoke suite should fail on visible error UI, page errors, and
+browser console errors.
+
 Proxy/IP caveat:
 
 - Default IP source is `cf-connecting-ip`.

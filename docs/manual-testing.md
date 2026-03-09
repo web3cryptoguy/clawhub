@@ -57,6 +57,9 @@ Run against prod:
 PLAYWRIGHT_BASE_URL=https://clawhub.ai bun run test:pw
 ```
 
+This smoke gate should fail on visible error UI, page errors, and browser
+console errors.
+
 Authenticated prod canary:
 
 ```
