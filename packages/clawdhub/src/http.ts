@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pRetry, { AbortError } from 'p-retry'
@@ -587,7 +587,6 @@ function setHeaderIfPresent(headers: Record<string, string>, key: string, value:
 
 async function readFileSafe(path: string) {
   try {
-    const { readFile } = await import('node:fs/promises')
     return await readFile(path)
   } catch {
     return null

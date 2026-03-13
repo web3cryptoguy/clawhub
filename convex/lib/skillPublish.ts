@@ -180,11 +180,11 @@ export async function publishVersionForUser(
     )
     let similarRecentCount = 0
     for (const entry of recentCandidates) {
-      const version = (await ctx.runQuery(internal.skills.getVersionByIdInternal, {
+      const recentVersion = (await ctx.runQuery(internal.skills.getVersionByIdInternal, {
         versionId: entry.latestVersionId as Id<'skillVersions'>,
       })) as Doc<'skillVersions'> | null
-      if (!version) continue
-      const candidateReadmeFile = version.files.find((file) => {
+      if (!recentVersion) continue
+      const candidateReadmeFile = recentVersion.files.find((file) => {
         const lower = file.path.toLowerCase()
         return lower === 'skill.md' || lower === 'skills.md'
       })

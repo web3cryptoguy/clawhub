@@ -1,23 +1,43 @@
 /* @vitest-environment node */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-
-const originalBunVersion = (process.versions as Record<string, string | undefined>).bun
-
-function enableBunRuntime() {
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+const bunRuntimeMocks = vi.hoisted(() => {
+  const originalBunVersion = (process.versions as Record<string, string | undefined>).bun
   Object.defineProperty(process.versions, 'bun', {
     value: '1.2.3',
     configurable: true,
   })
-}
+
+  return {
+    originalBunVersion,
+    spawnSync: vi.fn(),
+    mkdtemp: vi.fn(async () => '/tmp/clawhub-test'),
+    rm: vi.fn(async () => undefined),
+    writeFile: vi.fn(async () => undefined),
+    readFile: vi.fn(async () => Buffer.from([1, 2, 3]) as Buffer<ArrayBuffer>),
+  }
+})
+
+vi.mock('node:child_process', () => ({
+  spawnSync: bunRuntimeMocks.spawnSync,
+}))
+
+vi.mock('node:fs/promises', () => ({
+  mkdtemp: bunRuntimeMocks.mkdtemp,
+  rm: bunRuntimeMocks.rm,
+  writeFile: bunRuntimeMocks.writeFile,
+  readFile: bunRuntimeMocks.readFile,
+}))
+
+import * as http from './http'
 
 function restoreBunRuntime() {
-  if (originalBunVersion === undefined) {
+  if (bunRuntimeMocks.originalBunVersion === undefined) {
     Reflect.deleteProperty(process.versions, 'bun')
     return
   }
   Object.defineProperty(process.versions, 'bun', {
-    value: originalBunVersion,
+    value: bunRuntimeMocks.originalBunVersion,
     configurable: true,
   })
 }
@@ -33,37 +53,48 @@ function mockImmediateTimeouts() {
   return { setTimeoutMock, clearTimeoutMock }
 }
 
+type SpawnImpl = (...args: unknown[]) => unknown
+
 async function loadHttpModuleWithBunMocks(opts?: {
-  spawnImpl?: ReturnType<typeof vi.fn>
+  spawnImpl?: SpawnImpl
   mkdtempValue?: string
   readFileValue?: Buffer | null
 }) {
-  const spawnSync = opts?.spawnImpl ?? vi.fn()
-  const mkdtemp = vi.fn(async () => opts?.mkdtempValue ?? '/tmp/clawhub-test')
-  const rm = vi.fn(async () => undefined)
-  const writeFile = vi.fn(async () => undefined)
-  const readFile = vi.fn(async () => opts?.readFileValue ?? Buffer.from([1, 2, 3]))
+  const spawnSync: SpawnImpl = opts?.spawnImpl ?? vi.fn()
+  bunRuntimeMocks.spawnSync.mockImplementation((...args: unknown[]) => spawnSync(...args))
+  bunRuntimeMocks.mkdtemp.mockImplementation(async () => opts?.mkdtempValue ?? '/tmp/clawhub-test')
+  bunRuntimeMocks.rm.mockImplementation(async () => undefined)
+  bunRuntimeMocks.writeFile.mockImplementation(async () => undefined)
+  bunRuntimeMocks.readFile.mockImplementation(
+    async () => (opts?.readFileValue ?? Buffer.from([1, 2, 3])) as Buffer<ArrayBuffer>,
+  )
 
-  vi.doMock('node:child_process', () => ({ spawnSync }))
-  vi.doMock('node:fs/promises', () => ({ mkdtemp, rm, writeFile, readFile }))
-
-  const http = await import('./http')
-  return { http, spawnSync, mkdtemp, rm, writeFile, readFile }
+  return {
+    http,
+    spawnSync: bunRuntimeMocks.spawnSync,
+    mkdtemp: bunRuntimeMocks.mkdtemp,
+    rm: bunRuntimeMocks.rm,
+    writeFile: bunRuntimeMocks.writeFile,
+    readFile: bunRuntimeMocks.readFile,
+  }
 }
 
 describe('http bun runtime', () => {
   beforeEach(() => {
-    vi.resetModules()
     vi.clearAllMocks()
     vi.unstubAllGlobals()
-    enableBunRuntime()
+    Object.defineProperty(process.versions, 'bun', {
+      value: '1.2.3',
+      configurable: true,
+    })
   })
 
   afterEach(() => {
-    restoreBunRuntime()
-    vi.doUnmock('node:child_process')
-    vi.doUnmock('node:fs/promises')
     vi.unstubAllGlobals()
+  })
+
+  afterAll(() => {
+    restoreBunRuntime()
   })
 
   it('uses curl for apiRequest GET and parses JSON', async () => {
@@ -72,11 +103,11 @@ describe('http bun runtime', () => {
       stdout: '{"ok":true}\n200',
       stderr: '',
     })
-    const { http } = await loadHttpModuleWithBunMocks({ spawnImpl: spawnSync })
+    const { http: httpClient } = await loadHttpModuleWithBunMocks({ spawnImpl: spawnSync })
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
-    const result = await http.apiRequest<{ ok: boolean }>('https://registry.example', {
+    const result = await httpClient.apiRequest<{ ok: boolean }>('https://registry.example', {
       method: 'GET',
       path: '/v1/ping',
       token: 'clh_token',
@@ -98,9 +129,9 @@ describe('http bun runtime', () => {
       stdout: '{"ok":true}\n200',
       stderr: '',
     })
-    const { http } = await loadHttpModuleWithBunMocks({ spawnImpl: spawnSync })
+    const { http: httpClient } = await loadHttpModuleWithBunMocks({ spawnImpl: spawnSync })
 
-    await http.apiRequest('https://registry.example', {
+    await httpClient.apiRequest('https://registry.example', {
       method: 'POST',
       path: '/v1/ping',
       body: { a: 1 },
@@ -118,10 +149,10 @@ describe('http bun runtime', () => {
       stdout: 'rate limited\n429',
       stderr: '',
     })
-    const { http } = await loadHttpModuleWithBunMocks({ spawnImpl: spawnSync })
+    const { http: httpClient } = await loadHttpModuleWithBunMocks({ spawnImpl: spawnSync })
 
     await expect(
-      http.apiRequest('https://registry.example', {
+      httpClient.apiRequest('https://registry.example', {
         method: 'GET',
         path: '/v1/ping',
       }),
@@ -138,10 +169,10 @@ describe('http bun runtime', () => {
         'rate limited\n__CLAWHUB_CURL_META__\n429\n20\n0\n1771404540\n20\n0\n34\n34\n',
       stderr: '',
     })
-    const { http } = await loadHttpModuleWithBunMocks({ spawnImpl: spawnSync })
+    const { http: httpClient } = await loadHttpModuleWithBunMocks({ spawnImpl: spawnSync })
 
     await expect(
-      http.apiRequest('https://registry.example', {
+      httpClient.apiRequest('https://registry.example', {
         method: 'GET',
         path: '/v1/ping',
       }),
@@ -156,10 +187,10 @@ describe('http bun runtime', () => {
       stdout: 'missing\n404',
       stderr: '',
     })
-    const { http } = await loadHttpModuleWithBunMocks({ spawnImpl: spawnSync })
+    const { http: httpClient } = await loadHttpModuleWithBunMocks({ spawnImpl: spawnSync })
 
     await expect(
-      http.apiRequest('https://registry.example', {
+      httpClient.apiRequest('https://registry.example', {
         method: 'GET',
         path: '/v1/ping',
       }),
@@ -181,13 +212,13 @@ describe('http bun runtime', () => {
         stdout: '\n400',
         stderr: '',
       })
-    const { http } = await loadHttpModuleWithBunMocks({ spawnImpl: spawnSync })
+    const { http: httpClient } = await loadHttpModuleWithBunMocks({ spawnImpl: spawnSync })
 
-    const text = await http.fetchText('https://registry.example', { path: '/v1/readme' })
+    const text = await httpClient.fetchText('https://registry.example', { path: '/v1/readme' })
     expect(text).toBe('hello world')
 
     await expect(
-      http.fetchText('https://registry.example', { path: '/v1/readme' }),
+      httpClient.fetchText('https://registry.example', { path: '/v1/readme' }),
     ).rejects.toThrow('HTTP 400')
   })
 
@@ -204,17 +235,17 @@ describe('http bun runtime', () => {
         stdout: '404',
         stderr: '',
       })
-    const { http, rm, readFile } = await loadHttpModuleWithBunMocks({
+    const { http: httpClient, rm, readFile } = await loadHttpModuleWithBunMocks({
       spawnImpl: spawnSync,
       mkdtempValue: '/tmp/clawhub-download-abc',
       readFileValue: Buffer.from('not found'),
     })
 
-    const bytes = await http.downloadZip('https://registry.example', { slug: 'demo', token: 't' })
+    const bytes = await httpClient.downloadZip('https://registry.example', { slug: 'demo', token: 't' })
     expect(Array.from(bytes)).toEqual(Array.from(Buffer.from('not found')))
 
     await expect(
-      http.downloadZip('https://registry.example', { slug: 'demo', token: 't' }),
+      httpClient.downloadZip('https://registry.example', { slug: 'demo', token: 't' }),
     ).rejects.toThrow('not found')
 
     expect(readFile).toHaveBeenCalled()
@@ -230,7 +261,7 @@ describe('http bun runtime', () => {
       stdout: '{"ok":true}\n200',
       stderr: '',
     })
-    const { http, writeFile, rm } = await loadHttpModuleWithBunMocks({
+    const { http: httpClient, writeFile, rm } = await loadHttpModuleWithBunMocks({
       spawnImpl: spawnSync,
       mkdtempValue: '/tmp/clawhub-upload-abc',
     })
@@ -239,7 +270,7 @@ describe('http bun runtime', () => {
     form.append('name', 'demo')
     form.append('file', new Blob(['abc'], { type: 'text/plain' }), 'demo.txt')
 
-    const result = await http.apiRequestForm<{ ok: boolean }>('https://registry.example', {
+    const result = await httpClient.apiRequestForm<{ ok: boolean }>('https://registry.example', {
       method: 'POST',
       path: '/upload',
       form,

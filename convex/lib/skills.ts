@@ -98,14 +98,14 @@ export function parseClawdisMetadata(frontmatter: ParsedSkillFrontmatter) {
       .filter((entry): entry is SkillInstallSpec => Boolean(entry))
     const osRaw = normalizeStringList(clawdisObj.os)
 
-    const metadata: ClawdisSkillMetadata = {}
-    if (typeof clawdisObj.always === 'boolean') metadata.always = clawdisObj.always
-    if (typeof clawdisObj.emoji === 'string') metadata.emoji = clawdisObj.emoji
-    if (typeof clawdisObj.homepage === 'string') metadata.homepage = clawdisObj.homepage
-    if (typeof clawdisObj.skillKey === 'string') metadata.skillKey = clawdisObj.skillKey
-    if (typeof clawdisObj.primaryEnv === 'string') metadata.primaryEnv = clawdisObj.primaryEnv
-    if (typeof clawdisObj.cliHelp === 'string') metadata.cliHelp = clawdisObj.cliHelp
-    if (osRaw.length > 0) metadata.os = osRaw
+    const parsedMetadata: ClawdisSkillMetadata = {}
+    if (typeof clawdisObj.always === 'boolean') parsedMetadata.always = clawdisObj.always
+    if (typeof clawdisObj.emoji === 'string') parsedMetadata.emoji = clawdisObj.emoji
+    if (typeof clawdisObj.homepage === 'string') parsedMetadata.homepage = clawdisObj.homepage
+    if (typeof clawdisObj.skillKey === 'string') parsedMetadata.skillKey = clawdisObj.skillKey
+    if (typeof clawdisObj.primaryEnv === 'string') parsedMetadata.primaryEnv = clawdisObj.primaryEnv
+    if (typeof clawdisObj.cliHelp === 'string') parsedMetadata.cliHelp = clawdisObj.cliHelp
+    if (osRaw.length > 0) parsedMetadata.os = osRaw
 
     if (requiresRaw) {
       const bins = normalizeStringList(requiresRaw.bins)
@@ -113,34 +113,34 @@ export function parseClawdisMetadata(frontmatter: ParsedSkillFrontmatter) {
       const env = normalizeStringList(requiresRaw.env)
       const config = normalizeStringList(requiresRaw.config)
       if (bins.length || anyBins.length || env.length || config.length) {
-        metadata.requires = {}
-        if (bins.length) metadata.requires.bins = bins
-        if (anyBins.length) metadata.requires.anyBins = anyBins
-        if (env.length) metadata.requires.env = env
-        if (config.length) metadata.requires.config = config
+        parsedMetadata.requires = {}
+        if (bins.length) parsedMetadata.requires.bins = bins
+        if (anyBins.length) parsedMetadata.requires.anyBins = anyBins
+        if (env.length) parsedMetadata.requires.env = env
+        if (config.length) parsedMetadata.requires.config = config
       }
     }
 
-    if (install.length > 0) metadata.install = install
+    if (install.length > 0) parsedMetadata.install = install
     const nix = parseNixPluginSpec(clawdisObj.nix)
-    if (nix) metadata.nix = nix
+    if (nix) parsedMetadata.nix = nix
     const config = parseClawdbotConfigSpec(clawdisObj.config)
-    if (config) metadata.config = config
+    if (config) parsedMetadata.config = config
 
     // Parse env var declarations (detailed env with descriptions)
     const envVars = parseEnvVarDeclarations(clawdisObj.envVars ?? clawdisObj.env)
-    if (envVars.length > 0) metadata.envVars = envVars
+    if (envVars.length > 0) parsedMetadata.envVars = envVars
 
     // Parse dependency declarations
     const dependencies = parseDependencyDeclarations(clawdisObj.dependencies)
-    if (dependencies.length > 0) metadata.dependencies = dependencies
+    if (dependencies.length > 0) parsedMetadata.dependencies = dependencies
 
     // Parse author and links
-    if (typeof clawdisObj.author === 'string') metadata.author = clawdisObj.author
+    if (typeof clawdisObj.author === 'string') parsedMetadata.author = clawdisObj.author
     const links = parseSkillLinks(clawdisObj.links)
-    if (links) metadata.links = links
+    if (links) parsedMetadata.links = links
 
-    return parseArk(ClawdisSkillMetadataSchema, metadata, 'Clawdis metadata')
+    return parseArk(ClawdisSkillMetadataSchema, parsedMetadata, 'Clawdis metadata')
   } catch {
     return undefined
   }

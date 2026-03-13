@@ -140,12 +140,12 @@ function SoulsIndex() {
               className="skills-sort"
               value={sort}
               onChange={(event) => {
-                const sort = parseSort(event.target.value)
+                const nextSort = parseSort(event.target.value)
                 void navigate({
                   search: (prev) => ({
                     ...prev,
-                    sort,
-                    dir: parseDir(prev.dir, sort),
+                    sort: nextSort,
+                    dir: parseDir(prev.dir, nextSort),
                   }),
                   replace: true,
                 })

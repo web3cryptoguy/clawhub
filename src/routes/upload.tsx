@@ -383,9 +383,9 @@ export function Upload() {
           params: isSoulMode ? { slug: trimmedSlug } : { owner: ownerParam, slug: trimmedSlug },
         })
       }
-    } catch (error) {
+    } catch (publishError) {
       setStatus(null)
-      setError(formatPublishError(error))
+      setError(formatPublishError(publishError))
     }
   }
 
