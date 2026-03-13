@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased (target: 0.8.0)
+## Unreleased
+
+## 0.8.0 - 2026-03-13
 
 ### Added
 - Skills/Web: show skill owner avatar + handle on skill cards, lists, and detail pages (#312) (thanks @ianalloway).
