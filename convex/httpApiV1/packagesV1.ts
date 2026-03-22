@@ -12,6 +12,7 @@ import {
   MAX_RAW_FILE_BYTES,
   getPathSegments,
   json,
+  resolveTagsBatch,
   requireApiTokenUserOrResponse,
   safeTextFileResponse,
   text,
@@ -21,6 +22,13 @@ const apiRefs = api as unknown as {
   packages: {
     listPublicPage: unknown;
     searchPublic: unknown;
+  };
+  skills: {
+    listPackageCatalogPage: unknown;
+    searchPackageCatalogPublic: unknown;
+    getBySlug: unknown;
+    listVersionsPage: unknown;
+    getVersionBySkillAndVersion: unknown;
   };
 };
 const internalRefs = internal as unknown as {
@@ -33,6 +41,11 @@ const internalRefs = internal as unknown as {
     getReleaseByPackageAndVersionInternal: unknown;
     getReleaseByIdInternal: unknown;
   };
+  skills: {
+    getSkillBySlugInternal: unknown;
+    getVersionByIdInternal: unknown;
+    getVersionBySkillAndVersionInternal: unknown;
+  };
 };
 
 async function runQueryRef<T>(ctx: ActionCtx, ref: unknown, args: unknown): Promise<T> {
@@ -44,12 +57,41 @@ async function runActionRef<T>(ctx: ActionCtx, ref: unknown, args: unknown): Pro
 }
 
 type PackageListQueryArgs = {
-  family?: "code-plugin" | "bundle-plugin";
+  family?: "skill" | "code-plugin" | "bundle-plugin";
   channel?: "official" | "community" | "private";
   isOfficial?: boolean;
   executesCode?: boolean;
   capabilityTag?: string;
   paginationOpts: { cursor: string | null; numItems: number };
+};
+
+type SkillPackageDocLike = {
+  _id: Id<"skills">;
+  slug: string;
+  displayName: string;
+  summary?: string | null;
+  latestVersionId?: Id<"skillVersions">;
+  tags: Record<string, Id<"skillVersions">>;
+  stats?: unknown;
+  createdAt: number;
+  updatedAt: number;
+  badges?: { official?: unknown };
+};
+
+type SkillVersionLike = {
+  _id: Id<"skillVersions">;
+  skillId: Id<"skills">;
+  version: string;
+  createdAt: number;
+  changelog: string;
+  files: Array<{
+    path: string;
+    size: number;
+    sha256: string;
+    storageId?: Id<"_storage">;
+    contentType?: string;
+  }>;
+  softDeletedAt?: number;
 };
 
 type ReleaseLike = {
@@ -92,6 +134,203 @@ async function resolvePackageTags(
       .map(([tag, releaseId]) => [tag, byId.get(releaseId)])
       .filter((entry): entry is [string, string] => Boolean(entry[1])),
   );
+}
+
+type CatalogListItem = {
+  name: string;
+  displayName: string;
+  family: "skill" | "code-plugin" | "bundle-plugin";
+  runtimeId?: string | null;
+  channel: "official" | "community" | "private";
+  isOfficial: boolean;
+  summary?: string | null;
+  ownerHandle?: string | null;
+  createdAt: number;
+  updatedAt: number;
+  latestVersion?: string | null;
+  capabilityTags?: string[];
+  executesCode?: boolean;
+  verificationTier?: string | null;
+};
+
+type CatalogSearchEntry = { score: number; package: CatalogListItem };
+
+type CatalogSourceCursorState = {
+  cursor: string | null;
+  offset: number;
+  pageSize: number | null;
+  done: boolean;
+};
+
+type UnifiedCatalogCursorState = {
+  packages: CatalogSourceCursorState;
+  skills: CatalogSourceCursorState;
+};
+
+type CatalogPageResult = {
+  page: CatalogListItem[];
+  isDone: boolean;
+  continueCursor: string;
+};
+
+type CatalogSourceState = {
+  state: CatalogSourceCursorState;
+  page: CatalogPageResult | null;
+  pageCursor: string | null;
+  index: number;
+};
+
+const UNIFIED_CATALOG_CURSOR_PREFIX = "pkgcatalog:";
+
+function defaultCatalogSourceCursorState(): CatalogSourceCursorState {
+  return { cursor: null, offset: 0, pageSize: null, done: false };
+}
+
+function encodeUnifiedCatalogCursor(state: UnifiedCatalogCursorState) {
+  return `${UNIFIED_CATALOG_CURSOR_PREFIX}${JSON.stringify(state)}`;
+}
+
+function decodeUnifiedCatalogCursor(raw: string | null | undefined): UnifiedCatalogCursorState {
+  if (!raw?.startsWith(UNIFIED_CATALOG_CURSOR_PREFIX)) {
+    return {
+      packages: { ...defaultCatalogSourceCursorState(), cursor: raw ?? null },
+      skills: defaultCatalogSourceCursorState(),
+    };
+  }
+  try {
+    const parsed = JSON.parse(raw.slice(UNIFIED_CATALOG_CURSOR_PREFIX.length)) as Partial<UnifiedCatalogCursorState>;
+    const normalize = (input: Partial<CatalogSourceCursorState> | undefined): CatalogSourceCursorState => ({
+      cursor: typeof input?.cursor === "string" ? input.cursor : null,
+      offset: typeof input?.offset === "number" && input.offset > 0 ? input.offset : 0,
+      pageSize: typeof input?.pageSize === "number" && input.pageSize > 0 ? input.pageSize : null,
+      done: input?.done === true,
+    });
+    return {
+      packages: normalize(parsed.packages),
+      skills: normalize(parsed.skills),
+    };
+  } catch {
+    return {
+      packages: defaultCatalogSourceCursorState(),
+      skills: defaultCatalogSourceCursorState(),
+    };
+  }
+}
+
+function initCatalogSource(state: CatalogSourceCursorState): CatalogSourceState {
+  return {
+    state: { ...state },
+    page: null,
+    pageCursor: state.cursor,
+    index: state.offset,
+  };
+}
+
+function finalizeCatalogSource(source: CatalogSourceState): CatalogSourceCursorState {
+  if (!source.page) return source.state;
+  if (source.index < source.page.page.length) {
+    return {
+      cursor: source.pageCursor,
+      offset: source.index,
+      pageSize: source.state.pageSize,
+      done: source.page.isDone,
+    };
+  }
+  return {
+    cursor: source.page.continueCursor,
+    offset: 0,
+    pageSize: source.state.pageSize,
+    done: source.page.isDone,
+  };
+}
+
+async function ensureCatalogSourcePage(
+  source: CatalogSourceState,
+  pageSize: number,
+  fetchPage: (cursor: string | null, pageSize: number) => Promise<CatalogPageResult>,
+) {
+  while (true) {
+    if (!source.page) {
+      if (source.state.done && source.state.offset === 0) return null;
+      const effectivePageSize = source.state.pageSize ?? pageSize;
+      source.pageCursor = source.state.cursor;
+      source.page = await fetchPage(source.pageCursor, effectivePageSize);
+      source.state.pageSize = effectivePageSize;
+      source.index = source.state.offset;
+    }
+
+    if (source.index < source.page.page.length) {
+      return source.page.page[source.index];
+    }
+
+    if (source.page.isDone) return null;
+
+    source.state.cursor = source.page.continueCursor;
+    source.state.offset = 0;
+    source.state.done = source.page.isDone;
+    source.page = null;
+    source.pageCursor = source.state.cursor;
+    source.index = 0;
+  }
+}
+
+function compareCatalogItems(a: CatalogListItem, b: CatalogListItem) {
+  if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
+  if (a.createdAt !== b.createdAt) return b.createdAt - a.createdAt;
+  if (a.family !== b.family) return a.family.localeCompare(b.family);
+  return a.name.localeCompare(b.name);
+}
+
+async function resolveSkillTags(
+  ctx: ActionCtx,
+  tags: Record<string, Id<"skillVersions">>,
+): Promise<Record<string, string>> {
+  const [resolved] = await resolveTagsBatch(ctx, [tags]);
+  return resolved ?? {};
+}
+
+function isSkillOfficial(skill: SkillPackageDocLike) {
+  return Boolean(skill.badges?.official);
+}
+
+function toSkillPackageDetail(
+  skill: SkillPackageDocLike,
+  latestVersion: SkillVersionLike | null,
+  owner: { handle?: string; displayName?: string; image?: string } | null,
+  resolvedTags: Record<string, string>,
+) {
+  return {
+    package: {
+      name: skill.slug,
+      displayName: skill.displayName,
+      family: "skill" as const,
+      runtimeId: null,
+      channel: isSkillOfficial(skill) ? ("official" as const) : ("community" as const),
+      isOfficial: isSkillOfficial(skill),
+      summary: skill.summary ?? null,
+      ownerHandle: owner?.handle ?? null,
+      createdAt: skill.createdAt,
+      updatedAt: skill.updatedAt,
+      latestVersion: latestVersion?.version ?? null,
+      tags: resolvedTags,
+      compatibility: null,
+      capabilities: null,
+      verification: null,
+    },
+    owner: owner
+      ? {
+          handle: owner.handle ?? null,
+          displayName: owner.displayName ?? null,
+          image: owner.image ?? null,
+        }
+      : null,
+  };
+}
+
+function skillVersionTags(tags: Record<string, string>, version: string) {
+  return Object.entries(tags)
+    .filter(([, taggedVersion]) => taggedVersion === version)
+    .map(([tag]) => tag);
 }
 
 function parsePackagePublishBody(body: unknown) {
@@ -173,28 +412,123 @@ async function listPackages(ctx: ActionCtx, request: Request, family?: PackageLi
   const capabilityTag = url.searchParams.get("capabilityTag")?.trim() || undefined;
   const isOfficialRaw = url.searchParams.get("isOfficial");
   const executesCodeRaw = url.searchParams.get("executesCode");
-  if (familyRaw === "skill") {
-    return text("Use /api/v1/skills for skill browsing", 400, rate.headers);
-  }
   const effectiveFamily =
     family ??
-    (familyRaw === "code-plugin" || familyRaw === "bundle-plugin"
+    (familyRaw === "skill" || familyRaw === "code-plugin" || familyRaw === "bundle-plugin"
       ? familyRaw
       : undefined);
+  const channel =
+    channelRaw === "official" || channelRaw === "community" || channelRaw === "private"
+      ? channelRaw
+      : undefined;
+  const isOfficial =
+    isOfficialRaw === "true" ? true : isOfficialRaw === "false" ? false : undefined;
+  const executesCode =
+    executesCodeRaw === "true" ? true : executesCodeRaw === "false" ? false : undefined;
+
+  if (effectiveFamily === "skill") {
+    const result = await runQueryRef<{
+      page: CatalogListItem[];
+      isDone: boolean;
+      continueCursor: string | null;
+    }>(ctx, apiRefs.skills.listPackageCatalogPage, {
+      channel,
+      isOfficial,
+      executesCode,
+      capabilityTag,
+      paginationOpts: { cursor, numItems: limit },
+    });
+    return json(
+      { items: result.page, nextCursor: result.isDone ? null : result.continueCursor },
+      200,
+      rate.headers,
+    );
+  }
+
+  if (!effectiveFamily) {
+    const packageSource = initCatalogSource(decodeUnifiedCatalogCursor(cursor).packages);
+    const skillSource = initCatalogSource(decodeUnifiedCatalogCursor(cursor).skills);
+    const pageSize = limit;
+    const items: CatalogListItem[] = [];
+
+    while (items.length < limit) {
+      const [packageCandidate, skillCandidate] = await Promise.all([
+        ensureCatalogSourcePage(packageSource, pageSize, async (pageCursor, numItems) => {
+          const result = await runQueryRef<{
+            page: CatalogListItem[];
+            isDone: boolean;
+            continueCursor: string | null;
+          }>(ctx, apiRefs.packages.listPublicPage, {
+            channel,
+            isOfficial,
+            executesCode,
+            capabilityTag,
+            paginationOpts: { cursor: pageCursor, numItems },
+          });
+          return {
+            page: result.page,
+            isDone: result.isDone,
+            continueCursor: result.continueCursor ?? "",
+          };
+        }),
+        ensureCatalogSourcePage(skillSource, pageSize, async (pageCursor, numItems) => {
+          const result = await runQueryRef<{
+            page: CatalogListItem[];
+            isDone: boolean;
+            continueCursor: string | null;
+          }>(ctx, apiRefs.skills.listPackageCatalogPage, {
+            channel,
+            isOfficial,
+            executesCode,
+            capabilityTag,
+            paginationOpts: { cursor: pageCursor, numItems },
+          });
+          return {
+            page: result.page,
+            isDone: result.isDone,
+            continueCursor: result.continueCursor ?? "",
+          };
+        }),
+      ]);
+
+      if (!packageCandidate && !skillCandidate) break;
+      if (!skillCandidate || (packageCandidate && compareCatalogItems(packageCandidate, skillCandidate) <= 0)) {
+        items.push(packageCandidate!);
+        packageSource.index += 1;
+      } else {
+        items.push(skillCandidate);
+        skillSource.index += 1;
+      }
+    }
+
+    const nextState = {
+      packages: finalizeCatalogSource(packageSource),
+      skills: finalizeCatalogSource(skillSource),
+    };
+    const isDoneAll =
+      nextState.packages.done &&
+      nextState.packages.offset === 0 &&
+      nextState.skills.done &&
+      nextState.skills.offset === 0;
+    return json(
+      {
+        items,
+        nextCursor: isDoneAll ? null : encodeUnifiedCatalogCursor(nextState),
+      },
+      200,
+      rate.headers,
+    );
+  }
+
   const result = await runQueryRef<{
     page: unknown[];
     isDone: boolean;
     continueCursor: string | null;
   }>(ctx, apiRefs.packages.listPublicPage, {
     family: effectiveFamily,
-    channel:
-      channelRaw === "official" || channelRaw === "community" || channelRaw === "private"
-        ? channelRaw
-        : undefined,
-    isOfficial:
-      isOfficialRaw === "true" ? true : isOfficialRaw === "false" ? false : undefined,
-    executesCode:
-      executesCodeRaw === "true" ? true : executesCodeRaw === "false" ? false : undefined,
+    channel,
+    isOfficial,
+    executesCode,
     capabilityTag,
     paginationOpts: { cursor, numItems: limit },
   } satisfies PackageListQueryArgs);
@@ -277,6 +611,72 @@ async function getReleaseForRequest(
   );
 }
 
+function isReadmeVariantPath(path: string) {
+  const normalized = path.trim().toLowerCase();
+  return (
+    normalized === "readme.md" ||
+    normalized === "readme.mdx" ||
+    normalized === "readme.markdown"
+  );
+}
+
+function resolveSkillFilePath(version: SkillVersionLike, requestedPath: string) {
+  const normalized = requestedPath.trim();
+  const lower = normalized.toLowerCase();
+  if (isReadmeVariantPath(normalized)) {
+    return (
+      version.files.find((file) => {
+        const fileLower = file.path.toLowerCase();
+        return fileLower === "skill.md" || fileLower === "skills.md";
+      }) ?? null
+    );
+  }
+  return (
+    version.files.find((file) => file.path === normalized) ??
+    version.files.find((file) => file.path.toLowerCase() === lower) ??
+    null
+  );
+}
+
+async function getSkillDetailForRequest(ctx: ActionCtx, slug: string) {
+  return (await runQueryRef(ctx, apiRefs.skills.getBySlug, { slug })) as
+    | {
+        skill: SkillPackageDocLike | null;
+        latestVersion: SkillVersionLike | null;
+        owner: { handle?: string; displayName?: string; image?: string } | null;
+      }
+    | null;
+}
+
+async function getSkillVersionForRequest(
+  ctx: ActionCtx,
+  skill: Pick<SkillPackageDocLike, "_id" | "latestVersionId" | "tags">,
+  request: Request,
+) {
+  const url = new URL(request.url);
+  const versionParam = url.searchParams.get("version")?.trim();
+  const tagParam = url.searchParams.get("tag")?.trim();
+
+  if (versionParam) {
+    return (await runQueryRef(ctx, internalRefs.skills.getVersionBySkillAndVersionInternal, {
+      skillId: skill._id,
+      version: versionParam,
+    })) as SkillVersionLike | null;
+  }
+  if (tagParam) {
+    const versionId = skill.tags[tagParam];
+    if (!versionId) return null;
+    return (await runQueryRef(ctx, internalRefs.skills.getVersionByIdInternal, {
+      versionId,
+    })) as SkillVersionLike | null;
+  }
+  const latestVersionId = skill.latestVersionId ?? skill.tags.latest;
+  if (!latestVersionId) return null;
+  return (await runQueryRef(ctx, internalRefs.skills.getVersionByIdInternal, {
+    versionId: latestVersionId,
+  })) as SkillVersionLike | null;
+}
+
 export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Request) {
   const segments = getPathSegments(request, "/api/v1/packages/");
   if (segments.length === 0) return text("Not found", 404);
@@ -290,30 +690,78 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
     const queryText = url.searchParams.get("q")?.trim() ?? "";
     const limit = Math.max(1, Math.min(toOptionalNumber(url.searchParams.get("limit")) ?? 20, 100));
     const familyRaw = url.searchParams.get("family");
-    if (familyRaw === "skill") {
-      return text("Use /api/v1/skills for skill browsing", 400, rate.headers);
-    }
     const channelRaw = url.searchParams.get("channel");
     const isOfficialRaw = url.searchParams.get("isOfficial");
     const executesCodeRaw = url.searchParams.get("executesCode");
     const capabilityTag = url.searchParams.get("capabilityTag")?.trim() || undefined;
-    const results = await runQueryRef(ctx, apiRefs.packages.searchPublic, {
-      query: queryText,
-      limit,
-      family:
-        familyRaw === "code-plugin" || familyRaw === "bundle-plugin"
-          ? familyRaw
-          : undefined,
-      channel:
-        channelRaw === "official" || channelRaw === "community" || channelRaw === "private"
-          ? channelRaw
-          : undefined,
-      isOfficial:
-        isOfficialRaw === "true" ? true : isOfficialRaw === "false" ? false : undefined,
-      executesCode:
-        executesCodeRaw === "true" ? true : executesCodeRaw === "false" ? false : undefined,
-      capabilityTag,
-    });
+    const family =
+      familyRaw === "skill" || familyRaw === "code-plugin" || familyRaw === "bundle-plugin"
+        ? familyRaw
+        : undefined;
+    const channel =
+      channelRaw === "official" || channelRaw === "community" || channelRaw === "private"
+        ? channelRaw
+        : undefined;
+    const isOfficial =
+      isOfficialRaw === "true" ? true : isOfficialRaw === "false" ? false : undefined;
+    const executesCode =
+      executesCodeRaw === "true" ? true : executesCodeRaw === "false" ? false : undefined;
+
+    let results: CatalogSearchEntry[];
+    if (family === "skill") {
+      results = await runQueryRef<CatalogSearchEntry[]>(ctx, apiRefs.skills.searchPackageCatalogPublic, {
+        query: queryText,
+        limit,
+        channel,
+        isOfficial,
+        executesCode,
+        capabilityTag,
+      });
+    } else if (family) {
+      results = await runQueryRef<CatalogSearchEntry[]>(ctx, apiRefs.packages.searchPublic, {
+        query: queryText,
+        limit,
+        family,
+        channel,
+        isOfficial,
+        executesCode,
+        capabilityTag,
+      });
+    } else {
+      const [packageResults, skillResults] = await Promise.all([
+        runQueryRef<CatalogSearchEntry[]>(ctx, apiRefs.packages.searchPublic, {
+          query: queryText,
+          limit,
+          channel,
+          isOfficial,
+          executesCode,
+          capabilityTag,
+        }),
+        runQueryRef<CatalogSearchEntry[]>(ctx, apiRefs.skills.searchPackageCatalogPublic, {
+          query: queryText,
+          limit,
+          channel,
+          isOfficial,
+          executesCode,
+          capabilityTag,
+        }),
+      ]);
+      const seen = new Set<string>();
+      results = [...packageResults, ...skillResults]
+        .filter((entry) => {
+          const key = `${entry.package.family}:${entry.package.name}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .sort(
+          (a, b) =>
+            b.score - a.score ||
+            Number(b.package.isOfficial) - Number(a.package.isOfficial) ||
+            compareCatalogItems(a.package, b.package),
+        )
+        .slice(0, limit);
+    }
     return json({ results }, 200, rate.headers);
   }
 
@@ -333,20 +781,35 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
         owner: { _id: Id<"users">; handle?: string; displayName?: string; image?: string } | null;
       }
     | null;
-
-  if (!detail?.package) return text("Package not found", 404, rate.headers);
+  const skillDetail = detail?.package ? null : await getSkillDetailForRequest(ctx, packageName);
+  if (!detail?.package && !skillDetail?.skill) return text("Package not found", 404, rate.headers);
+  const packageDetail = detail?.package ? detail : null;
+  const publicPackage = packageDetail?.package ?? null;
+  const packageOwner = packageDetail?.owner ?? null;
 
   if (segments.length === 1) {
+    if (skillDetail?.skill) {
+      return json(
+        toSkillPackageDetail(
+          skillDetail.skill,
+          skillDetail.latestVersion,
+          skillDetail.owner,
+          await resolveSkillTags(ctx, skillDetail.skill.tags),
+        ),
+        200,
+        rate.headers,
+      );
+    }
     return json({
       package: {
-        ...detail.package,
-        tags: await resolvePackageTags(ctx, detail.package.tags),
+        ...publicPackage!,
+        tags: await resolvePackageTags(ctx, publicPackage!.tags),
       },
-      owner: detail.owner
+      owner: packageOwner
         ? {
-            handle: detail.owner.handle ?? null,
-            displayName: detail.owner.displayName ?? null,
-            image: detail.owner.image ?? null,
+            handle: packageOwner.handle ?? null,
+            displayName: packageOwner.displayName ?? null,
+            image: packageOwner.image ?? null,
           }
         : null,
     }, 200, rate.headers);
@@ -355,6 +818,26 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
   if (segments[1] === "versions" && segments.length === 2) {
     const limit = Math.max(1, Math.min(toOptionalNumber(new URL(request.url).searchParams.get("limit")) ?? 25, 100));
     const cursor = new URL(request.url).searchParams.get("cursor");
+    if (skillDetail?.skill) {
+      const result = (await runQueryRef(ctx, apiRefs.skills.listVersionsPage, {
+        skillId: skillDetail.skill._id,
+        cursor: cursor ?? undefined,
+        limit,
+      })) as {
+        items: Array<{ version: string; createdAt: number; changelog: string }>;
+        nextCursor: string | null;
+      };
+      const tags = await resolveSkillTags(ctx, skillDetail.skill.tags);
+      return json({
+        items: result.items.map((version) => ({
+          version: version.version,
+          createdAt: version.createdAt,
+          changelog: version.changelog,
+          distTags: skillVersionTags(tags, version.version),
+        })),
+        nextCursor: result.nextCursor,
+      }, 200, rate.headers);
+    }
     const result = await runQueryRef<{
       page: ReleaseLike[];
       isDone: boolean;
@@ -376,6 +859,36 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
   }
 
   if (segments[1] === "versions" && segments[2]) {
+    if (skillDetail?.skill) {
+      const version = (await runQueryRef(ctx, internalRefs.skills.getVersionBySkillAndVersionInternal, {
+        skillId: skillDetail.skill._id,
+        version: segments[2],
+      })) as SkillVersionLike | null;
+      if (!version || version.softDeletedAt) return text("Version not found", 404, rate.headers);
+      const tags = await resolveSkillTags(ctx, skillDetail.skill.tags);
+      return json({
+        package: {
+          name: skillDetail.skill.slug,
+          displayName: skillDetail.skill.displayName,
+          family: "skill",
+        },
+        version: {
+          version: version.version,
+          createdAt: version.createdAt,
+          changelog: version.changelog,
+          distTags: skillVersionTags(tags, version.version),
+          files: version.files.map((file) => ({
+            path: file.path,
+            size: file.size,
+            sha256: file.sha256,
+            contentType: file.contentType,
+          })),
+          compatibility: null,
+          capabilities: null,
+          verification: null,
+        },
+      }, 200, rate.headers);
+    }
     const result = (await runQueryRef(
       ctx,
       internalRefs.packages.getVersionByNameForViewerInternal,
@@ -413,7 +926,28 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
   if (segments[1] === "file") {
     const path = new URL(request.url).searchParams.get("path")?.trim();
     if (!path) return text("Missing path", 400, rate.headers);
-    const release = await getReleaseForRequest(ctx, detail.package, request);
+    if (skillDetail?.skill) {
+      const version = await getSkillVersionForRequest(ctx, skillDetail.skill, request);
+      if (!version || version.softDeletedAt) return text("Version not found", 404, rate.headers);
+      const file = resolveSkillFilePath(version, path);
+      if (!file) return text("File not found", 404, rate.headers);
+      if (!("storageId" in file) || !file.storageId) return text("File not found", 404, rate.headers);
+      if (!isTextFile(file.path, file.contentType)) {
+        return text("Binary files are not served inline", 415, rate.headers);
+      }
+      if (file.size > MAX_RAW_FILE_BYTES) return text("File too large", 413, rate.headers);
+      const blob = await ctx.storage.get(file.storageId);
+      if (!blob) return text("File not found", 404, rate.headers);
+      return safeTextFileResponse({
+        textContent: await blob.text(),
+        path: file.path,
+        contentType: file.contentType,
+        sha256: file.sha256,
+        size: file.size,
+        headers: rate.headers,
+      });
+    }
+    const release = await getReleaseForRequest(ctx, publicPackage!, request);
     if (!release) return text("Version not found", 404, rate.headers);
     const file = release.files.find((entry) => entry.path === path);
     if (!file) return text("File not found", 404, rate.headers);
@@ -435,7 +969,20 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
   }
 
   if (segments[1] === "download") {
-    const release = await getReleaseForRequest(ctx, detail.package, request);
+    if (skillDetail?.skill) {
+      const url = new URL("/api/v1/download", request.url);
+      url.searchParams.set("slug", skillDetail.skill.slug);
+      const requestUrl = new URL(request.url);
+      const version = requestUrl.searchParams.get("version")?.trim();
+      const tag = requestUrl.searchParams.get("tag")?.trim();
+      if (version) url.searchParams.set("version", version);
+      if (tag) url.searchParams.set("tag", tag);
+      return new Response(null, {
+        status: 307,
+        headers: mergeHeaders(rate.headers, { Location: url.toString() }, corsHeaders()),
+      });
+    }
+    const release = await getReleaseForRequest(ctx, publicPackage!, request);
     if (!release) return text("Version not found", 404, rate.headers);
     const entries: Array<{ path: string; bytes: Uint8Array }> = [];
     for (const file of release.files) {
@@ -447,8 +994,8 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
       });
     }
     const zip = buildDeterministicZip(entries, {
-      ownerId: String(detail.owner?._id ?? ""),
-      slug: detail.package.name.replaceAll("/", "-"),
+      ownerId: String(packageOwner?._id ?? ""),
+      slug: publicPackage!.name.replaceAll("/", "-"),
       version: release.version,
       publishedAt: release.createdAt,
     });
@@ -458,7 +1005,7 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
         rate.headers,
         {
           "Content-Type": "application/zip",
-          "Content-Disposition": `attachment; filename="${detail.package.name.replaceAll("/", "-")}-${release.version}.zip"`,
+          "Content-Disposition": `attachment; filename="${publicPackage!.name.replaceAll("/", "-")}-${release.version}.zip"`,
         },
         corsHeaders(),
       ),

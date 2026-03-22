@@ -2267,7 +2267,7 @@ describe("httpApiV1 handlers", () => {
     expect(response.headers.get("RateLimit-Limit")).toBeTruthy();
   });
 
-  it("packages list rejects family=skill on the generic route", async () => {
+  it("packages list supports family=skill on the generic route", async () => {
     const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
     const runMutation = vi.fn().mockResolvedValue(okRate());
 
@@ -2276,13 +2276,17 @@ describe("httpApiV1 handlers", () => {
       new Request("https://example.com/api/v1/packages?family=skill&limit=7"),
     );
 
-    expect(response.status).toBe(400);
-    await expect(response.text()).resolves.toContain("/api/v1/skills");
-    expect(runQuery).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        paginationOpts: { cursor: null, numItems: 7 },
+      }),
+    );
   });
 
-  it("packages search rejects family=skill on the generic route", async () => {
-    const runQuery = vi.fn();
+  it("packages search supports family=skill on the generic route", async () => {
+    const runQuery = vi.fn().mockResolvedValue([]);
     const runMutation = vi.fn().mockResolvedValue(okRate());
 
     const response = await __handlers.packagesGetRouterV1Handler(
@@ -2290,9 +2294,156 @@ describe("httpApiV1 handlers", () => {
       new Request("https://example.com/api/v1/packages/search?q=demo&family=skill"),
     );
 
-    expect(response.status).toBe(400);
-    await expect(response.text()).resolves.toContain("/api/v1/skills");
-    expect(runQuery).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        query: "demo",
+      }),
+    );
+  });
+
+  it("packages detail falls back to public skills", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) return null;
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:demo",
+            slug: "demo",
+            displayName: "Demo Skill",
+            summary: "Skill summary",
+            latestVersionId: "skillVersions:demo-1",
+            tags: { latest: "skillVersions:demo-1" },
+            badges: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: {
+            _id: "skillVersions:demo-1",
+            skillId: "skills:demo",
+            version: "1.0.0",
+            createdAt: 3,
+            changelog: "init",
+            files: [],
+          },
+          owner: { handle: "steipete", displayName: "Peter" },
+        };
+      }
+      if ("versionIds" in args) {
+        return [{ _id: "skillVersions:demo-1", version: "1.0.0" }];
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/demo"),
+    );
+
+    if (response.status !== 200) throw new Error(await response.text());
+    await expect(response.json()).resolves.toMatchObject({
+      package: {
+        name: "demo",
+        family: "skill",
+        latestVersion: "1.0.0",
+        channel: "community",
+      },
+      owner: {
+        handle: "steipete",
+      },
+    });
+  });
+
+  it("packages file serves SKILL.md for skill README requests", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) return null;
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:demo",
+            slug: "demo",
+            displayName: "Demo Skill",
+            summary: "Skill summary",
+            latestVersionId: "skillVersions:demo-1",
+            tags: { latest: "skillVersions:demo-1" },
+            badges: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: null,
+          owner: { handle: "steipete" },
+        };
+      }
+      if ("versionId" in args) {
+        return {
+          _id: "skillVersions:demo-1",
+          skillId: "skills:demo",
+          version: "1.0.0",
+          createdAt: 3,
+          changelog: "init",
+          files: [
+            {
+              path: "SKILL.md",
+              size: 11,
+              sha256: "abc",
+              storageId: "storage:skill",
+              contentType: "text/markdown",
+            },
+          ],
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const storage = {
+      get: vi.fn().mockResolvedValue(new Blob(["# Demo skill"])),
+    };
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage }),
+      new Request("https://example.com/api/v1/packages/demo/file?path=README.md"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("# Demo skill");
+    expect(storage.get).toHaveBeenCalledWith("storage:skill");
+  });
+
+  it("packages download redirects skills to the skill download endpoint", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) return null;
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:demo",
+            slug: "demo",
+            displayName: "Demo Skill",
+            summary: "Skill summary",
+            latestVersionId: "skillVersions:demo-1",
+            tags: { latest: "skillVersions:demo-1" },
+            badges: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: null,
+          owner: { handle: "steipete" },
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/demo/download?version=1.0.0"),
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("Location")).toBe(
+      "https://example.com/api/v1/download?slug=demo&version=1.0.0",
+    );
   });
 
   it("packages detail hides private packages from anonymous requests", async () => {

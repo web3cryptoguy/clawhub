@@ -7,7 +7,7 @@ import { familyLabel, packageCapabilityLabel } from "../../lib/packageLabels";
 type PackageSearchState = {
   q?: string;
   cursor?: string;
-  family?: "code-plugin" | "bundle-plugin";
+  family?: "skill" | "code-plugin" | "bundle-plugin";
   official?: boolean;
   executesCode?: boolean;
 };
@@ -22,7 +22,7 @@ export const Route = createFileRoute("/packages/")({
     q: typeof search.q === "string" && search.q.trim() ? search.q.trim() : undefined,
     cursor: typeof search.cursor === "string" && search.cursor ? search.cursor : undefined,
     family:
-      search.family === "code-plugin" || search.family === "bundle-plugin"
+      search.family === "skill" || search.family === "code-plugin" || search.family === "bundle-plugin"
         ? search.family
         : undefined,
     official:
@@ -72,7 +72,7 @@ export function PackagesIndex() {
           Packages
         </h1>
         <p className="section-subtitle" style={{ marginBottom: 0 }}>
-          Native OpenClaw packages: code plugins and bundle plugins.
+          Unified OpenClaw catalog: skills, code plugins, bundle plugins.
         </p>
       </header>
 
@@ -112,6 +112,7 @@ export function PackagesIndex() {
               }}
             >
               <option value="">All families</option>
+              <option value="skill">Skills</option>
               <option value="code-plugin">Code plugins</option>
               <option value="bundle-plugin">Bundle plugins</option>
             </select>
@@ -147,6 +148,9 @@ export function PackagesIndex() {
               />
               Executes code
             </label>
+            <Link className="btn" to="/upload" search={{ updateSlug: undefined }}>
+              Publish Skill
+            </Link>
             <Link className="btn" to="/packages/new">
               Publish Plugin
             </Link>

@@ -11,7 +11,7 @@ let loaderDataMock: {
   items: Array<{
     name: string;
     displayName: string;
-    family: "code-plugin" | "bundle-plugin";
+    family: "skill" | "code-plugin" | "bundle-plugin";
     channel: "official" | "community" | "private";
     isOfficial: boolean;
     executesCode?: boolean;
@@ -65,12 +65,12 @@ describe("packages route", () => {
     loaderDataMock = { items: [], nextCursor: null };
   });
 
-  it("drops unsupported skill family filters from search state", async () => {
+  it("preserves skill family filters in search state", async () => {
     const route = await loadRoute();
     const validateSearch = route.__config.validateSearch as (search: Record<string, unknown>) => Record<string, unknown>;
 
     expect(validateSearch({ family: "skill", q: "demo" })).toEqual({
-      family: undefined,
+      family: "skill",
       q: "demo",
       cursor: undefined,
       official: undefined,
@@ -134,12 +134,12 @@ describe("packages route", () => {
     });
   });
 
-  it("does not render a dead Skills family option", async () => {
+  it("renders the Skills family option", async () => {
     const route = await loadRoute();
     const Component = route.__config.component as ComponentType;
 
     render(<Component />);
 
-    expect(screen.queryByRole("option", { name: "Skills" })).toBeNull();
+    expect(screen.getByRole("option", { name: "Skills" })).toBeTruthy();
   });
 });

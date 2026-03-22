@@ -37,6 +37,7 @@ clawhub install my-skill-pack
 clawhub update --all
 clawhub update --all --no-input --force
 clawhub publish ./my-skill-pack --slug my-skill-pack --name "My Skill Pack" --version 1.2.0 --changelog "Fixes + docs"
+clawhub package explore --family skill
 clawhub package explore --family code-plugin
 clawhub package inspect @openclaw/example-plugin
 clawhub package publish ./example-plugin --source-repo openclaw/example-plugin --source-commit abc123

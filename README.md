@@ -58,7 +58,7 @@ Common CLI flows:
 
 - Auth: `clawhub login`, `clawhub whoami`
 - Discover: `clawhub search ...`, `clawhub explore`
-- Browse packages/plugins: `clawhub package explore`, `clawhub package inspect <name>`
+- Browse unified catalog (skills + plugins): `clawhub package explore`, `clawhub package inspect <name>`
 - Manage local installs: `clawhub install <slug>`, `clawhub uninstall <slug>`, `clawhub list`, `clawhub update --all`
 - Inspect without installing: `clawhub inspect <slug>`
 - Publish/sync: `clawhub publish <path>`, `clawhub sync`

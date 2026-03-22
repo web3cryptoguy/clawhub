@@ -256,6 +256,44 @@ Notes:
 - Defaults to latest version.
 - File size limit: 200KB.
 
+### `GET /api/v1/packages`
+
+Unified catalog endpoint for:
+
+- skills
+- code plugins
+- bundle plugins
+
+Query params:
+
+- `limit` (optional): integer (1–100)
+- `cursor` (optional): pagination cursor
+- `family` (optional): `skill`, `code-plugin`, or `bundle-plugin`
+- `channel` (optional): `official`, `community`, or `private`
+- `isOfficial` (optional): `true` or `false`
+- `executesCode` (optional): `true` or `false`
+- `capabilityTag` (optional): capability filter for plugin packages
+
+Notes:
+
+- `GET /api/v1/code-plugins` and `GET /api/v1/bundle-plugins` remain fixed-family aliases.
+- Skill entries stay backed by the skill registry and can still be published only through `POST /api/v1/skills`.
+- `POST /api/v1/packages` is still only for code-plugin and bundle-plugin releases.
+
+### `GET /api/v1/packages/search`
+
+Unified catalog search across skills + plugin packages.
+
+Query params:
+
+- `q` (required): query string
+- `limit` (optional): integer (1–100)
+- `family` (optional): `skill`, `code-plugin`, or `bundle-plugin`
+- `channel` (optional): `official`, `community`, or `private`
+- `isOfficial` (optional): `true` or `false`
+- `executesCode` (optional): `true` or `false`
+- `capabilityTag` (optional): capability filter for plugin packages
+
 ### `GET /api/v1/resolve`
 
 Used by the CLI to map a local fingerprint to a known version.

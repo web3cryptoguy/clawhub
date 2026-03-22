@@ -54,14 +54,14 @@ describe("fetchPackages", () => {
     expect(url.searchParams.get("isOfficial")).toBe("true");
   });
 
-  it("does not forward unsupported skill family on package listings", async () => {
+  it("forwards skill family on package listings", async () => {
     vi.stubEnv("VITE_CONVEX_URL", "https://registry.example");
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 }));
 
     await fetchPackages({
-      family: "skill" as never,
+      family: "skill",
       limit: 12,
     });
 
@@ -71,7 +71,7 @@ describe("fetchPackages", () => {
     }
     const url = new URL(requestUrl);
     expect(url.pathname).toBe("/api/v1/packages");
-    expect(url.searchParams.get("family")).toBeNull();
+    expect(url.searchParams.get("family")).toBe("skill");
     expect(url.searchParams.get("limit")).toBe("12");
   });
 
