@@ -1,9 +1,11 @@
 /* @vitest-environment node */
 
-import { describe, expect, it, vi } from "vitest";
+import { getAuthUserId } from "@convex-dev/auth/server";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getByName,
   publishPackage,
+  publishPackageForUserInternal,
   getVersionByName,
   insertReleaseInternal,
   listPublicPage,
@@ -11,13 +13,17 @@ import {
   searchPublic,
 } from "./packages";
 
+vi.mock("@convex-dev/auth/server", () => ({
+  getAuthUserId: vi.fn(),
+}));
+
 type WrappedHandler<TArgs, TResult> = {
   _handler: (ctx: unknown, args: TArgs) => Promise<TResult>;
 };
 
 const getByNameHandler = (
   getByName as unknown as WrappedHandler<
-    { name: string; viewerUserId?: string },
+    { name: string },
     {
       package: { name: string; latestVersion: string | null };
       latestRelease: { version: string } | null;
@@ -26,7 +32,7 @@ const getByNameHandler = (
 )._handler;
 const getVersionByNameHandler = (
   getVersionByName as unknown as WrappedHandler<
-    { name: string; version: string; viewerUserId?: string },
+    { name: string; version: string },
     { package: { name: string }; version: { version: string } } | null
   >
 )._handler;
@@ -47,7 +53,6 @@ const listVersionsHandler = (
   listVersions as unknown as WrappedHandler<
     {
       name: string;
-      viewerUserId?: string;
       paginationOpts: { cursor: string | null; numItems: number };
     },
     { page: Array<{ version: string }>; isDone: boolean; continueCursor: string }
@@ -103,12 +108,25 @@ const searchPublicHandler = (
 const publishPackageHandler = (
   publishPackage as unknown as WrappedHandler<
     {
+      payload: unknown;
+    },
+    unknown
+  >
+)._handler;
+const publishPackageForUserInternalHandler = (
+  publishPackageForUserInternal as unknown as WrappedHandler<
+    {
       userId: string;
       payload: unknown;
     },
     unknown
   >
 )._handler;
+
+afterEach(() => {
+  vi.mocked(getAuthUserId).mockReset();
+  vi.mocked(getAuthUserId).mockResolvedValue(null);
+});
 
 function makeDigest(
   name: string,
@@ -784,36 +802,39 @@ describe("packages public queries", () => {
     });
 
     await expect(
-      getByNameHandler(ctx, { name: "demo-plugin" }),
+      getByNameHandler(ctx, { name: "demo-plugin", viewerUserId: "users:owner" } as never),
     ).resolves.toBeNull();
     await expect(
       listVersionsHandler(ctx, {
         name: "demo-plugin",
+        viewerUserId: "users:owner",
         paginationOpts: { cursor: null, numItems: 10 },
-      }),
+      } as never),
     ).resolves.toEqual({
       page: [],
       isDone: true,
       continueCursor: "",
     });
     await expect(
-      getVersionByNameHandler(ctx, { name: "demo-plugin", version: "1.0.0" }),
+      getVersionByNameHandler(
+        ctx,
+        { name: "demo-plugin", version: "1.0.0", viewerUserId: "users:owner" } as never,
+      ),
     ).resolves.toBeNull();
   });
 
   it("allows owners to read their private packages", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:owner" as never);
     const { ctx } = makePackageCtx({
       pkg: makePackageDoc({ channel: "private" }),
     });
 
     const detail = await getByNameHandler(ctx, {
       name: "demo-plugin",
-      viewerUserId: "users:owner",
     });
     const version = await getVersionByNameHandler(ctx, {
       name: "demo-plugin",
       version: "1.0.0",
-      viewerUserId: "users:owner",
     });
 
     expect(detail?.package.name).toBe("demo-plugin");
@@ -1100,7 +1121,7 @@ describe("packages public queries", () => {
 
   it("validates package publish payloads inside the action path", async () => {
     await expect(
-      publishPackageHandler({} as never, {
+      publishPackageForUserInternalHandler({} as never, {
         userId: "users:owner",
         payload: {
           name: "demo-plugin",
@@ -1116,7 +1137,7 @@ describe("packages public queries", () => {
 
   it("rejects skill publishes on the package endpoint", async () => {
     await expect(
-      publishPackageHandler({} as never, {
+      publishPackageForUserInternalHandler({} as never, {
         userId: "users:owner",
         payload: {
           name: "demo-skill",
@@ -1127,5 +1148,19 @@ describe("packages public queries", () => {
         },
       }),
     ).rejects.toThrow("Skill packages must use the skills publish flow");
+  });
+
+  it("requires auth inside the public publish action", async () => {
+    await expect(
+      publishPackageHandler({ runQuery: vi.fn(), runMutation: vi.fn() } as never, {
+        payload: {
+          name: "demo-plugin",
+          family: "bundle-plugin",
+          version: "1.0.0",
+          changelog: "init",
+          files: [],
+        },
+      }),
+    ).rejects.toThrow("Unauthorized");
   });
 });

@@ -1,3 +1,4 @@
+import { getAuthUserId } from "@convex-dev/auth/server";
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import {
@@ -7,10 +8,10 @@ import {
   type PackageFamily,
   type PackagePublishRequest,
 } from "clawhub-schema";
-import { api, internal } from "./_generated/api";
-import { action, internalMutation, internalQuery, query } from "./functions";
+import { internal } from "./_generated/api";
+import { action, internalAction, internalMutation, internalQuery, query } from "./functions";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { requireGitHubAccountAge } from "./lib/githubAccount";
 import { requireUserFromAction } from "./lib/access";
 import {
@@ -32,14 +33,13 @@ const MAX_PACKAGE_SCAN_DOCUMENTS = 30_000;
 const MAX_PUBLIC_LIST_SCAN_PAGES = 200;
 const MAX_SEARCH_PAGE_SIZE = 200;
 const MAX_SEARCH_SCAN_PAGES = 200;
-const apiRefs = api as unknown as {
-  packages: {
-    publishPackage: unknown;
-  };
-};
 const internalRefs = internal as unknown as {
   packages: {
     insertReleaseInternal: unknown;
+    getByNameForViewerInternal: unknown;
+    listVersionsForViewerInternal: unknown;
+    getVersionByNameForViewerInternal: unknown;
+    publishPackageForUserInternal: unknown;
   };
   skills: {
     getSkillBySlugInternal: unknown;
@@ -106,14 +106,6 @@ async function runMutationRef<T>(
   args: unknown,
 ): Promise<T> {
   return (await ctx.runMutation(ref as never, args as never)) as T;
-}
-
-async function runActionRef<T>(
-  ctx: { runAction: (ref: never, args: never) => Promise<unknown> },
-  ref: unknown,
-  args: unknown,
-): Promise<T> {
-  return (await ctx.runAction(ref as never, args as never)) as T;
 }
 
 type PublicPackageDoc = {
@@ -477,16 +469,44 @@ async function getPackageByNormalizedName(ctx: DbReaderCtx, normalizedName: stri
     .unique()) as Doc<"packages"> | null;
 }
 
+async function getReadablePackageByName(
+  ctx: DbReaderCtx,
+  name: string,
+  viewerUserId?: Id<"users">,
+) {
+  const normalizedName = normalizePackageName(name);
+  const pkg = await getPackageByNormalizedName(ctx, normalizedName);
+  if (!pkg || pkg.softDeletedAt) return null;
+  if (pkg.channel === "private" && pkg.ownerUserId !== viewerUserId) return null;
+  return pkg;
+}
+
 export const getByName = query({
+  args: { name: v.string() },
+  handler: async (ctx, args) => {
+    const viewerUserId = (await getAuthUserId(ctx)) ?? undefined;
+    const pkg = await getReadablePackageByName(ctx, args.name, viewerUserId);
+    if (!pkg) return null;
+    const latestRelease = pkg.latestReleaseId ? await ctx.db.get(pkg.latestReleaseId) : null;
+    const publicPackage = toPublicPackage(pkg, latestRelease);
+    if (!publicPackage) return null;
+    const owner = toPublicUser(await ctx.db.get(pkg.ownerUserId));
+    return {
+      package: publicPackage,
+      latestRelease: latestRelease && !latestRelease.softDeletedAt ? latestRelease : null,
+      owner,
+    };
+  },
+});
+
+export const getByNameForViewerInternal = internalQuery({
   args: {
     name: v.string(),
     viewerUserId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    const normalizedName = normalizePackageName(args.name);
-    const pkg = await getPackageByNormalizedName(ctx, normalizedName);
-    if (pkg?.channel === "private" && pkg.ownerUserId !== args.viewerUserId) return null;
-    if (!pkg || pkg.softDeletedAt) return null;
+    const pkg = await getReadablePackageByName(ctx, args.name, args.viewerUserId);
+    if (!pkg) return null;
     const latestRelease = pkg.latestReleaseId ? await ctx.db.get(pkg.latestReleaseId) : null;
     const publicPackage = toPublicPackage(pkg, latestRelease);
     if (!publicPackage) return null;
@@ -502,16 +522,31 @@ export const getByName = query({
 export const listVersions = query({
   args: {
     name: v.string(),
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, args) => {
+    const viewerUserId = (await getAuthUserId(ctx)) ?? undefined;
+    const pkg = await getReadablePackageByName(ctx, args.name, viewerUserId);
+    if (!pkg) return { page: [], isDone: true, continueCursor: "" };
+    return await ctx.db
+      .query("packageReleases")
+      .withIndex("by_package_active_created", (q) =>
+        q.eq("packageId", pkg._id).eq("softDeletedAt", undefined),
+      )
+      .order("desc")
+      .paginate(args.paginationOpts);
+  },
+});
+
+export const listVersionsForViewerInternal = internalQuery({
+  args: {
+    name: v.string(),
     viewerUserId: v.optional(v.id("users")),
     paginationOpts: paginationOptsValidator,
   },
   handler: async (ctx, args) => {
-    const normalizedName = normalizePackageName(args.name);
-    const pkg = await getPackageByNormalizedName(ctx, normalizedName);
-    if (pkg?.channel === "private" && pkg.ownerUserId !== args.viewerUserId) {
-      return { page: [], isDone: true, continueCursor: "" };
-    }
-    if (!pkg || pkg.softDeletedAt) return { page: [], isDone: true, continueCursor: "" };
+    const pkg = await getReadablePackageByName(ctx, args.name, args.viewerUserId);
+    if (!pkg) return { page: [], isDone: true, continueCursor: "" };
     return await ctx.db
       .query("packageReleases")
       .withIndex("by_package_active_created", (q) =>
@@ -526,14 +561,36 @@ export const getVersionByName = query({
   args: {
     name: v.string(),
     version: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const viewerUserId = (await getAuthUserId(ctx)) ?? undefined;
+    const pkg = await getReadablePackageByName(ctx, args.name, viewerUserId);
+    if (!pkg) return null;
+    const publicPackage = toPublicPackage(pkg);
+    if (!publicPackage) return null;
+    const release = await ctx.db
+      .query("packageReleases")
+      .withIndex("by_package_version", (q) => q.eq("packageId", pkg._id).eq("version", args.version))
+      .unique();
+    if (!release || release.softDeletedAt) return null;
+    return {
+      package: publicPackage,
+      version: release,
+    };
+  },
+});
+
+export const getVersionByNameForViewerInternal = internalQuery({
+  args: {
+    name: v.string(),
+    version: v.string(),
     viewerUserId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    const normalizedName = normalizePackageName(args.name);
-    const pkg = await getPackageByNormalizedName(ctx, normalizedName);
-    if (pkg?.channel === "private" && pkg.ownerUserId !== args.viewerUserId) return null;
+    const pkg = await getReadablePackageByName(ctx, args.name, args.viewerUserId);
+    if (!pkg) return null;
     const publicPackage = toPublicPackage(pkg);
-    if (!publicPackage || !pkg) return null;
+    if (!publicPackage) return null;
     const release = await ctx.db
       .query("packageReleases")
       .withIndex("by_package_version", (q) => q.eq("packageId", pkg._id).eq("version", args.version))
@@ -765,112 +822,126 @@ export const getReleasesByIdsInternal = internalQuery({
   },
 });
 
+async function publishPackageImpl(
+  ctx: Parameters<typeof requireGitHubAccountAge>[0] & Pick<ActionCtx, "storage">,
+  userId: Id<"users">,
+  rawPayload: unknown,
+) {
+  const payload = parseArk(
+    PackagePublishRequestSchema,
+    rawPayload,
+    "Package publish payload",
+  ) as PackagePublishRequest;
+  if (payload.family === "skill") {
+    throw new ConvexError("Skill packages must use the skills publish flow");
+  }
+  await requireGitHubAccountAge(ctx, userId);
+
+  const family = payload.family;
+  const name = normalizePackageName(payload.name);
+  const version = assertPackageVersion(family, payload.version);
+  const displayName = payload.displayName?.trim() || name;
+  const files = normalizePublishFiles(payload.files as never);
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  if (totalBytes > MAX_PACKAGE_BYTES) {
+    throw new ConvexError("Package exceeds 50MB limit");
+  }
+
+  const existingSkill = await runQueryRef(ctx, internalRefs.skills.getSkillBySlugInternal, {
+    slug: name,
+  });
+  if (existingSkill) {
+    throw new ConvexError(`Package name collides with existing skill slug "${name}"`);
+  }
+  if (family === "code-plugin" && (!payload.source?.repo || !payload.source?.commit)) {
+    throw new ConvexError("Code plugins require source repo and commit metadata");
+  }
+
+  const packageJsonEntry = await readOptionalTextFile(ctx, files, (path) => path === "package.json");
+  const pluginManifestEntry = await readOptionalTextFile(ctx, files, (path) => path === "openclaw.plugin.json");
+  const bundleManifestEntry = await readOptionalTextFile(ctx, files, (path) => path === "openclaw.bundle.json");
+  const readmeEntry = await readOptionalTextFile(
+    ctx,
+    files,
+    (path) => path === "readme.md" || path === "readme.mdx",
+  );
+
+  const packageJson = maybeParseJson(packageJsonEntry?.text);
+  if (packageJson) ensurePluginNameMatchesPackage(name, packageJson);
+
+  const bundleArtifacts =
+    family === "bundle-plugin"
+      ? extractBundlePluginArtifacts({
+          packageName: name,
+          packageJson,
+          bundleManifest: maybeParseJson(bundleManifestEntry?.text),
+          bundleMetadata: payload.bundle,
+          source: payload.source,
+        })
+      : null;
+
+  const codeArtifacts =
+    family === "code-plugin"
+      ? extractCodePluginArtifacts({
+          packageName: name,
+          packageJson: packageJson ?? (() => {
+            throw new ConvexError("package.json is required for code plugins");
+          })(),
+          pluginManifest: maybeParseJson(pluginManifestEntry?.text) ?? (() => {
+            throw new ConvexError("openclaw.plugin.json is required for code plugins");
+          })(),
+          source: payload.source,
+        })
+      : null;
+
+  const summary = summarizePackageForSearch({
+    packageName: name,
+    packageJson,
+    readmeText: readmeEntry?.text ?? null,
+  });
+  const integritySha256 = await hashSkillFiles(
+    files.map((file) => ({ path: file.path, sha256: file.sha256 })),
+  );
+
+  return await runMutationRef(ctx, internalRefs.packages.insertReleaseInternal, {
+    userId,
+    name,
+    displayName,
+    family,
+    version,
+    changelog: payload.changelog.trim(),
+    tags: payload.tags?.map((tag: string) => tag.trim()).filter(Boolean) ?? ["latest"],
+    summary,
+    sourceRepo: payload.source?.repo || payload.source?.url,
+    runtimeId: codeArtifacts?.runtimeId ?? bundleArtifacts?.runtimeId,
+    channel: payload.channel,
+    compatibility: codeArtifacts?.compatibility ?? bundleArtifacts?.compatibility,
+    capabilities: codeArtifacts?.capabilities ?? bundleArtifacts?.capabilities,
+    verification: codeArtifacts?.verification ?? bundleArtifacts?.verification,
+    files,
+    integritySha256,
+    extractedPackageJson: packageJson,
+    extractedPluginManifest: family === "code-plugin" ? maybeParseJson(pluginManifestEntry?.text) : undefined,
+    normalizedBundleManifest: family === "bundle-plugin" ? maybeParseJson(bundleManifestEntry?.text) : undefined,
+    source: payload.source,
+  });
+}
+
 export const publishPackage = action({
+  args: { payload: v.any() },
+  handler: async (ctx, args) => {
+    const { userId } = await requireUserFromAction(ctx);
+    return await publishPackageImpl(ctx, userId, args.payload);
+  },
+});
+
+export const publishPackageForUserInternal = internalAction({
   args: {
     userId: v.id("users"),
     payload: v.any(),
   },
   handler: async (ctx, args) => {
-    const payload = parseArk(
-      PackagePublishRequestSchema,
-      args.payload,
-      "Package publish payload",
-    ) as PackagePublishRequest;
-    if (payload.family === "skill") {
-      throw new ConvexError("Skill packages must use the skills publish flow");
-    }
-    await requireGitHubAccountAge(ctx, args.userId);
-
-    const family = payload.family;
-    const name = normalizePackageName(payload.name);
-    const version = assertPackageVersion(family, payload.version);
-    const displayName = payload.displayName?.trim() || name;
-    const files = normalizePublishFiles(payload.files as never);
-    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
-    if (totalBytes > MAX_PACKAGE_BYTES) {
-      throw new ConvexError("Package exceeds 50MB limit");
-    }
-
-    const existingSkill = await runQueryRef(ctx, internalRefs.skills.getSkillBySlugInternal, {
-      slug: name,
-    });
-    if (existingSkill) {
-      throw new ConvexError(`Package name collides with existing skill slug "${name}"`);
-    }
-    if (family === "code-plugin" && (!payload.source?.repo || !payload.source?.commit)) {
-      throw new ConvexError("Code plugins require source repo and commit metadata");
-    }
-
-    const packageJsonEntry = await readOptionalTextFile(ctx, files, (path) => path === "package.json");
-    const pluginManifestEntry = await readOptionalTextFile(ctx, files, (path) => path === "openclaw.plugin.json");
-    const bundleManifestEntry = await readOptionalTextFile(ctx, files, (path) => path === "openclaw.bundle.json");
-    const readmeEntry = await readOptionalTextFile(
-      ctx,
-      files,
-      (path) => path === "readme.md" || path === "readme.mdx",
-    );
-
-    const packageJson = maybeParseJson(packageJsonEntry?.text);
-    if (packageJson) ensurePluginNameMatchesPackage(name, packageJson);
-
-    const bundleArtifacts =
-      family === "bundle-plugin"
-        ? extractBundlePluginArtifacts({
-            packageName: name,
-            packageJson,
-            bundleManifest: maybeParseJson(bundleManifestEntry?.text),
-            bundleMetadata: payload.bundle,
-            source: payload.source,
-          })
-        : null;
-
-    const codeArtifacts =
-      family === "code-plugin"
-        ? extractCodePluginArtifacts({
-            packageName: name,
-            packageJson: packageJson ?? (() => {
-              throw new ConvexError("package.json is required for code plugins");
-            })(),
-            pluginManifest: maybeParseJson(pluginManifestEntry?.text) ?? (() => {
-              throw new ConvexError("openclaw.plugin.json is required for code plugins");
-            })(),
-            source: payload.source,
-          })
-        : null;
-
-    const summary = summarizePackageForSearch({
-      packageName: name,
-      packageJson,
-      readmeText: readmeEntry?.text ?? null,
-    });
-    const integritySha256 = await hashSkillFiles(
-      files.map((file) => ({ path: file.path, sha256: file.sha256 })),
-    );
-
-    const result = await runMutationRef(ctx, internalRefs.packages.insertReleaseInternal, {
-      userId: args.userId,
-      name,
-      displayName,
-      family,
-      version,
-      changelog: payload.changelog.trim(),
-      tags: payload.tags?.map((tag: string) => tag.trim()).filter(Boolean) ?? ["latest"],
-      summary,
-      sourceRepo: payload.source?.repo || payload.source?.url,
-      runtimeId: codeArtifacts?.runtimeId ?? bundleArtifacts?.runtimeId,
-      channel: payload.channel,
-      compatibility: codeArtifacts?.compatibility ?? bundleArtifacts?.compatibility,
-      capabilities: codeArtifacts?.capabilities ?? bundleArtifacts?.capabilities,
-      verification: codeArtifacts?.verification ?? bundleArtifacts?.verification,
-      files,
-      integritySha256,
-      extractedPackageJson: packageJson,
-      extractedPluginManifest: family === "code-plugin" ? maybeParseJson(pluginManifestEntry?.text) : undefined,
-      normalizedBundleManifest: family === "bundle-plugin" ? maybeParseJson(bundleManifestEntry?.text) : undefined,
-      source: payload.source,
-    });
-
-    return result;
+    return await publishPackageImpl(ctx, args.userId, args.payload);
   },
 });
 
@@ -878,10 +949,7 @@ export const publishRelease = action({
   args: { payload: v.any() },
   handler: async (ctx, args) => {
     const { userId } = await requireUserFromAction(ctx);
-    return await runActionRef(ctx, apiRefs.packages.publishPackage, {
-      userId,
-      payload: args.payload,
-    });
+    return await publishPackageImpl(ctx, userId, args.payload);
   },
 });
 

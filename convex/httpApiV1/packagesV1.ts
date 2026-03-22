@@ -20,15 +20,15 @@ import {
 const apiRefs = api as unknown as {
   packages: {
     listPublicPage: unknown;
-    publishPackage: unknown;
     searchPublic: unknown;
-    getByName: unknown;
-    listVersions: unknown;
-    getVersionByName: unknown;
   };
 };
 const internalRefs = internal as unknown as {
   packages: {
+    getByNameForViewerInternal: unknown;
+    listVersionsForViewerInternal: unknown;
+    getVersionByNameForViewerInternal: unknown;
+    publishPackageForUserInternal: unknown;
     getReleasesByIdsInternal: unknown;
     getReleaseByPackageAndVersionInternal: unknown;
     getReleaseByIdInternal: unknown;
@@ -229,7 +229,7 @@ export async function publishPackageV1Handler(ctx: ActionCtx, request: Request) 
     const payload = contentType.includes("multipart/form-data")
       ? await parseMultipartPackagePublish(ctx, request)
       : parsePackagePublishBody(await request.json());
-    const result = await runActionRef(ctx, apiRefs.packages.publishPackage, {
+    const result = await runActionRef(ctx, internalRefs.packages.publishPackageForUserInternal, {
       userId: auth.userId,
       payload,
     });
@@ -321,7 +321,7 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
   const viewerUserId = (await getOptionalApiTokenUserId(ctx, request)) ?? (await getAuthUserId(ctx));
   const detail = (await runQueryRef(
     ctx,
-    apiRefs.packages.getByName,
+    internalRefs.packages.getByNameForViewerInternal,
     {
       name: packageName,
       viewerUserId: viewerUserId ?? undefined,
@@ -359,7 +359,7 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
       page: ReleaseLike[];
       isDone: boolean;
       continueCursor: string | null;
-    }>(ctx, apiRefs.packages.listVersions, {
+    }>(ctx, internalRefs.packages.listVersionsForViewerInternal, {
       name: packageName,
       viewerUserId: viewerUserId ?? undefined,
       paginationOpts: { cursor, numItems: limit },
@@ -378,7 +378,7 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
   if (segments[1] === "versions" && segments[2]) {
     const result = (await runQueryRef(
       ctx,
-      apiRefs.packages.getVersionByName,
+      internalRefs.packages.getVersionByNameForViewerInternal,
       {
         name: packageName,
         version: segments[2],
