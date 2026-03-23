@@ -6,6 +6,14 @@ vi.mock("@tanstack/react-router", () => ({
   createFileRoute:
     (path: string) =>
     (config: { component: unknown }) => ({ __config: config, __path: path }),
+  useSearch: () => ({
+    ownerHandle: undefined,
+    name: undefined,
+    displayName: undefined,
+    family: undefined,
+    nextVersion: undefined,
+    sourceRepo: undefined,
+  }),
 }));
 
 const generateUploadUrl = vi.fn();
@@ -23,7 +31,7 @@ vi.mock("../lib/useAuthStatus", () => ({
   useAuthStatus: () => useAuthStatusMock(),
 }));
 
-import { Route } from "../routes/plugins/new";
+import { Route } from "../routes/publish-plugin";
 
 function renderPublishRoute() {
   const route = Route as unknown as {
@@ -75,12 +83,12 @@ describe("plugins publish route", () => {
     vi.unstubAllGlobals();
   });
 
-  it("registers the publish form on /plugins/new", () => {
+  it("registers the publish form on /publish-plugin", () => {
     const route = Route as unknown as {
       __path: string;
     };
 
-    expect(route.__path).toBe("/plugins/new");
+    expect(route.__path).toBe("/publish-plugin");
   });
 
   it("publishes a code plugin folder with source metadata and normalized file paths", async () => {

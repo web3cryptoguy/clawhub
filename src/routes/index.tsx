@@ -69,8 +69,8 @@ function SkillsHome() {
               vectors. No gatekeeping, just signal.
             </p>
             <div style={{ display: "flex", gap: 12, marginTop: 20 }}>
-              <Link to="/upload" search={{ updateSlug: undefined }} className="btn btn-primary">
-                Publish a skill
+              <Link to="/publish-skill" search={{ updateSlug: undefined }} className="btn btn-primary">
+                Publish Skill
               </Link>
               <Link
                 to="/skills"
@@ -207,8 +207,8 @@ function OnlyCrabsHome() {
               public place.
             </p>
             <div style={{ display: "flex", gap: 12, marginTop: 20 }}>
-              <Link to="/upload" search={{ updateSlug: undefined }} className="btn btn-primary">
-                Publish a soul
+              <Link to="/publish-skill" search={{ updateSlug: undefined }} className="btn btn-primary">
+                Publish Soul
               </Link>
               <Link
                 to="/souls"

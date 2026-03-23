@@ -148,8 +148,12 @@ function Dashboard() {
               ))}
             </select>
           ) : null}
+          <Link to="/publish-skill" search={{ updateSlug: undefined }} className="btn btn-primary">
+            <Upload className="h-4 w-4" aria-hidden="true" />
+            Publish Skill
+          </Link>
           <Link
-            to="/plugins/new"
+            to="/publish-plugin"
             search={{ ...emptyPluginPublishSearch, ownerHandle }}
             className="btn"
           >
@@ -173,11 +177,11 @@ function Dashboard() {
             {skills.length === 0 ? (
               <div className="dashboard-inline-empty">
                 <div className="dashboard-inline-empty-copy">
-                  <strong>No skills yet.</strong> Upload your first skill to share it with the community.
+                  <strong>No skills yet.</strong> Publish your first skill to share it with the community.
                 </div>
-                <Link to="/upload" search={{ updateSlug: undefined }} className="btn btn-primary">
+                <Link to="/publish-skill" search={{ updateSlug: undefined }} className="btn btn-primary">
                   <Upload className="h-4 w-4" aria-hidden="true" />
-                  Upload a Skill
+                  Publish Skill
                 </Link>
               </div>
             ) : (
@@ -210,12 +214,12 @@ function Dashboard() {
                   <strong>No plugins yet.</strong> Publish your first plugin release to validate and distribute it.
                 </div>
                 <Link
-                  to="/plugins/new"
+                  to="/publish-plugin"
                   search={{ ...emptyPluginPublishSearch, ownerHandle }}
                   className="btn btn-primary"
                 >
                   <Plug className="h-4 w-4" aria-hidden="true" />
-                  Publish a Plugin
+                  Publish Plugin
                 </Link>
               </div>
             ) : (
@@ -287,7 +291,7 @@ function SkillRow({ skill, ownerHandle }: { skill: DashboardSkill; ownerHandle: 
         )}
       </div>
       <div className="dashboard-row-actions">
-        <Link to="/upload" search={{ updateSlug: skill.slug }} className="btn btn-sm">
+        <Link to="/publish-skill" search={{ updateSlug: skill.slug }} className="btn btn-sm">
           <Upload className="h-3 w-3" aria-hidden="true" />
           New Version
         </Link>
@@ -440,7 +444,7 @@ function PackageRow({ pkg, ownerHandle }: { pkg: DashboardPackage; ownerHandle: 
       </div>
       <div className="dashboard-row-actions">
         <Link
-          to="/plugins/new"
+          to="/publish-plugin"
           search={{
             ownerHandle,
             name: pkg.name,

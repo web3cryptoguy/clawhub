@@ -13,6 +13,8 @@ import { Route as UploadRouteImport } from './routes/upload'
 import { Route as StarsRouteImport } from './routes/stars'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SearchRouteImport } from './routes/search'
+import { Route as PublishSkillRouteImport } from './routes/publish-skill'
+import { Route as PublishPluginRouteImport } from './routes/publish-plugin'
 import { Route as ManagementRouteImport } from './routes/management'
 import { Route as ImportRouteImport } from './routes/import'
 import { Route as DashboardRouteImport } from './routes/dashboard'
@@ -50,6 +52,16 @@ const SettingsRoute = SettingsRouteImport.update({
 const SearchRoute = SearchRouteImport.update({
   id: '/search',
   path: '/search',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PublishSkillRoute = PublishSkillRouteImport.update({
+  id: '/publish-skill',
+  path: '/publish-skill',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PublishPluginRoute = PublishPluginRouteImport.update({
+  id: '/publish-plugin',
+  path: '/publish-plugin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ManagementRoute = ManagementRouteImport.update({
@@ -149,6 +161,8 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof DashboardRoute
   '/import': typeof ImportRoute
   '/management': typeof ManagementRoute
+  '/publish-plugin': typeof PublishPluginRoute
+  '/publish-skill': typeof PublishSkillRoute
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/stars': typeof StarsRoute
@@ -173,6 +187,8 @@ export interface FileRoutesByTo {
   '/dashboard': typeof DashboardRoute
   '/import': typeof ImportRoute
   '/management': typeof ManagementRoute
+  '/publish-plugin': typeof PublishPluginRoute
+  '/publish-skill': typeof PublishSkillRoute
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/stars': typeof StarsRoute
@@ -198,6 +214,8 @@ export interface FileRoutesById {
   '/dashboard': typeof DashboardRoute
   '/import': typeof ImportRoute
   '/management': typeof ManagementRoute
+  '/publish-plugin': typeof PublishPluginRoute
+  '/publish-skill': typeof PublishSkillRoute
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/stars': typeof StarsRoute
@@ -224,6 +242,8 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/import'
     | '/management'
+    | '/publish-plugin'
+    | '/publish-skill'
     | '/search'
     | '/settings'
     | '/stars'
@@ -248,6 +268,8 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/import'
     | '/management'
+    | '/publish-plugin'
+    | '/publish-skill'
     | '/search'
     | '/settings'
     | '/stars'
@@ -272,6 +294,8 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/import'
     | '/management'
+    | '/publish-plugin'
+    | '/publish-skill'
     | '/search'
     | '/settings'
     | '/stars'
@@ -297,6 +321,8 @@ export interface RootRouteChildren {
   DashboardRoute: typeof DashboardRoute
   ImportRoute: typeof ImportRoute
   ManagementRoute: typeof ManagementRoute
+  PublishPluginRoute: typeof PublishPluginRoute
+  PublishSkillRoute: typeof PublishSkillRoute
   SearchRoute: typeof SearchRoute
   SettingsRoute: typeof SettingsRoute
   StarsRoute: typeof StarsRoute
@@ -344,6 +370,20 @@ declare module '@tanstack/react-router' {
       path: '/search'
       fullPath: '/search'
       preLoaderRoute: typeof SearchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/publish-skill': {
+      id: '/publish-skill'
+      path: '/publish-skill'
+      fullPath: '/publish-skill'
+      preLoaderRoute: typeof PublishSkillRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/publish-plugin': {
+      id: '/publish-plugin'
+      path: '/publish-plugin'
+      fullPath: '/publish-plugin'
+      preLoaderRoute: typeof PublishPluginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/management': {
@@ -481,6 +521,8 @@ const rootRouteChildren: RootRouteChildren = {
   DashboardRoute: DashboardRoute,
   ImportRoute: ImportRoute,
   ManagementRoute: ManagementRoute,
+  PublishPluginRoute: PublishPluginRoute,
+  PublishSkillRoute: PublishSkillRoute,
   SearchRoute: SearchRoute,
   SettingsRoute: SettingsRoute,
   StarsRoute: StarsRoute,

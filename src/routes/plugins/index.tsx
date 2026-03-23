@@ -179,7 +179,7 @@ export function PluginsIndex() {
           </button>
           <Link
             className="btn btn-primary"
-            to="/plugins/new"
+            to="/publish-plugin"
             search={{
               ownerHandle: undefined,
               name: undefined,
@@ -189,7 +189,7 @@ export function PluginsIndex() {
               sourceRepo: undefined,
             }}
           >
-            Publish
+            Publish Plugin
           </Link>
         </div>
       </form>
