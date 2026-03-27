@@ -160,6 +160,70 @@ type VTFileResponse = {
 };
 
 type VTAnalysisStats = NonNullable<VTFileResponse["data"]["attributes"]["last_analysis_stats"]>;
+type PackageReleaseScanDoc = Pick<
+  Doc<"packageReleases">,
+  "verification" | "llmAnalysis" | "staticScan"
+>;
+type PackageScanDoc = Pick<Doc<"packages">, "family" | "isOfficial">;
+
+function buildPackageUndetectedFallbackAnalysis(
+  release: PackageReleaseScanDoc,
+  pkg: PackageScanDoc,
+  stats?: VTAnalysisStats,
+) {
+  if (!stats) return null;
+  if (pkg.family === "skill" || !pkg.isOfficial) return null;
+
+  const tier = release.verification?.tier;
+  if (tier !== "source-linked" && tier !== "provenance-verified" && tier !== "rebuild-verified") {
+    return null;
+  }
+  if (release.llmAnalysis?.status !== "clean") return null;
+  if (!release.staticScan || release.staticScan.status === "malicious") return null;
+  if (stats.malicious !== 0 || stats.suspicious !== 0) return null;
+  if ((stats.harmless ?? 0) <= 0 && (stats.undetected ?? 0) <= 0) return null;
+
+  return {
+    status: "clean",
+    verdict: "undetected-only-fallback",
+    analysis:
+      "VirusTotal reported no malicious or suspicious engine hits. ClawHub promoted this official source-linked package after clean LLM and non-malicious static scans.",
+    source: "engines-undetected-fallback",
+    checkedAt: Date.now(),
+  };
+}
+
+function buildPackageScanAnalysisFromVtResult(
+  release: PackageReleaseScanDoc,
+  pkg: PackageScanDoc,
+  vtResult: VTFileResponse,
+) {
+  const aiResult = vtResult.data.attributes.crowdsourced_ai_results?.find(
+    (r) => r.category === "code_insight",
+  );
+  if (aiResult) {
+    const verdict = normalizeVerdict(aiResult.verdict);
+    return {
+      status: verdictToStatus(verdict),
+      verdict: aiResult.verdict,
+      analysis: aiResult.analysis,
+      source: aiResult.source,
+      checkedAt: Date.now(),
+    };
+  }
+
+  const stats = vtResult.data.attributes.last_analysis_stats;
+  const status = statusFromAvStats(stats);
+  if (status) {
+    return {
+      status,
+      source: "engines",
+      checkedAt: Date.now(),
+    };
+  }
+
+  return buildPackageUndetectedFallbackAnalysis(release, pkg, stats);
+}
 
 type ScanQueueHealth = {
   queueSize: number;
@@ -592,21 +656,14 @@ export const scanPackageReleaseWithVirusTotal = internalAction({
 
     try {
       const existingFile = await checkExistingFile(apiKey, sha256hash);
-      const aiResult = existingFile?.data.attributes.crowdsourced_ai_results?.find(
-        (r) => r.category === "code_insight",
-      );
+      const vtAnalysis = existingFile
+        ? buildPackageScanAnalysisFromVtResult(release, pkg, existingFile)
+        : null;
 
-      if (aiResult) {
-        const verdict = normalizeVerdict(aiResult.verdict);
+      if (vtAnalysis) {
         await runMutationRef(ctx, internalRefs.packages.updateReleaseScanResultsInternal, {
           releaseId: args.releaseId,
-          vtAnalysis: {
-            status: verdictToStatus(verdict),
-            verdict: aiResult.verdict,
-            analysis: aiResult.analysis,
-            source: aiResult.source,
-            checkedAt: Date.now(),
-          },
+          vtAnalysis,
         });
         return;
       }
@@ -670,6 +727,10 @@ export const pollPackageReleaseScanResults = internalAction({
       releaseId: args.releaseId,
     })) as Doc<"packageReleases"> | null;
     if (!release || release.softDeletedAt || !release.sha256hash) return;
+    const pkg = (await runQueryRef(ctx, internalRefs.packages.getPackageByIdInternal, {
+      packageId: release.packageId,
+    })) as Doc<"packages"> | null;
+    if (!pkg || pkg.softDeletedAt) return;
 
     const attempt = args.attempt ?? 1;
     try {
@@ -684,33 +745,11 @@ export const pollPackageReleaseScanResults = internalAction({
         return;
       }
 
-      const aiResult = vtResult.data.attributes.crowdsourced_ai_results?.find(
-        (r) => r.category === "code_insight",
-      );
-      if (aiResult) {
-        const verdict = normalizeVerdict(aiResult.verdict);
+      const vtAnalysis = buildPackageScanAnalysisFromVtResult(release, pkg, vtResult);
+      if (vtAnalysis) {
         await runMutationRef(ctx, internalRefs.packages.updateReleaseScanResultsInternal, {
           releaseId: args.releaseId,
-          vtAnalysis: {
-            status: verdictToStatus(verdict),
-            verdict: aiResult.verdict,
-            analysis: aiResult.analysis,
-            source: aiResult.source,
-            checkedAt: Date.now(),
-          },
-        });
-        return;
-      }
-
-      const status = statusFromAvStats(vtResult.data.attributes.last_analysis_stats);
-      if (status) {
-        await runMutationRef(ctx, internalRefs.packages.updateReleaseScanResultsInternal, {
-          releaseId: args.releaseId,
-          vtAnalysis: {
-            status,
-            source: "engines",
-            checkedAt: Date.now(),
-          },
+          vtAnalysis,
         });
         return;
       }
