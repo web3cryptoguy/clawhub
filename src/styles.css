@@ -3863,6 +3863,7 @@ html.theme-transition::view-transition-new(theme) {
   padding: 6px 12px;
   font-size: 0.85rem;
   gap: 4px;
+  min-height: unset;
 }
 
 .btn-ghost {
